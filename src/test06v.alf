@@ -1,0 +1,8 @@
+count = 5
+
+loop:
+count printka
+count = count -1is
+count 0masaga loop
+
+"Countdown finished!" printke
