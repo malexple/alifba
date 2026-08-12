@@ -1,0 +1,8 @@
+count = 0
+
+loop:
+count printka
+count = count 1is
+count 3masaga loop
+
+"Loop finished" printke
