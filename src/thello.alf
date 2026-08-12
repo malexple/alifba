@@ -1,3 +1,8 @@
-"Hello, Alifba!" printke
-255 printka
--17 printka
+age = 25
+name = "Alifba"
+
+age printka
+name printke
+
+age = 30
+age printka
