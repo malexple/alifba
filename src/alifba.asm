@@ -1,26 +1,23 @@
 ; ============================================================
-; Alifba v0.1h - dobavleny podprogrammy: -lik/-lek (CALL) i return
+; Alifba v0.1i - dobavleny massivy (-lar/-ler)
+; + fix report_error (dvuznachnye kody)
+; + bufery pereupakovany v konets faila (optimizatsiya razmera)
 ; FASM, DOS .COM
 ; ============================================================
 ; Novaya grammatika:
 ;
-;   imyalik   -> vyzvat podprogrammu "imya" (sohranit adres vozvrata)
-;   imyalek   -> to zhe samoe (myagkaya forma)
-;   return    -> vernutsya tuda, otkuda byl vyzov
+;   <razmer>lar <imya>        -> ob"yavit chislovoi massiv (vse 0)
+;   <razmer>ler <imya>        -> to zhe samoe
+;   <imya>[indeks]             -> prochitat element (kak operand print/uslovie)
+;   <imya>[indeks] = znachenie -> zapisat element
 ;
 ; Primer:
-;   greetlik
-;   "After greeting" printke
-;   endga
+;   5lar scores
+;   scores[0] = 10
+;   scores[1] = 20
+;   scores[0] printka
 ;
-;   greet:
-;   "Hello from subroutine!" printke
-;   return
-;
-;   end:
-;   "Program end" printke
-;
-; Sborka:  fasm alifba_v0_1h.asm alifba.com
+; Sborka:  fasm alifba_v0_1i.asm alifba.com
 ; ============================================================
 
         org 100h
@@ -38,6 +35,8 @@ MAX_LABELS      = 8
 LABEL_NAME_LEN  = 8
 CONCAT_BUF_SIZE = 512
 MAX_CALL_DEPTH  = 8
+MAX_ARRAYS      = 4
+ARRAY_HEAP_SIZE = 256
 
 SUF_UNKNOWN     = 0
 SUF_KA          = 1
@@ -186,7 +185,7 @@ process_program:
         or      dx, dx
         jz      .next_line
 
-        mov     [return_addr_candidate], si  ; NOVOE: dlya obrabotki lik/lek (CALL)
+        mov     [return_addr_candidate], si
 
         push    si
         call    process_line
@@ -537,6 +536,174 @@ store_var_string_from_concat_buf:
         ret
 
 ; ============================================================
+; create_array / init_array_zeros / find_array / get_array_elem / set_array_elem
+; ============================================================
+create_array:
+        push    ax
+        push    cx
+        push    dx
+        push    di
+        mov     cx, [array_count]
+        xor     bx, bx
+        or      cx, cx
+        jz      .create
+.search:
+        cmp     bx, cx
+        jae     .create
+        mov     ax, bx
+        mov     dx, NAME_LEN+1
+        mul     dx
+        mov     di, array_names
+        add     di, ax
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .already_exists
+        inc     bx
+        jmp     .search
+.already_exists:
+        mov     al, 14
+        jmp     report_error
+.create:
+        mov     bx, [array_count]
+        cmp     bx, MAX_ARRAYS
+        jae     .table_full
+        mov     ax, bx
+        mov     dx, NAME_LEN+1
+        mul     dx
+        mov     di, array_names
+        add     di, ax
+.copy_name:
+        lodsb
+        stosb
+        or      al, al
+        jnz     .copy_name
+        inc     word [array_count]
+        pop     di
+        pop     dx
+        pop     cx
+        pop     ax
+        ret
+.table_full:
+        mov     al, 15
+        jmp     report_error
+
+init_array_zeros:
+        push    ax
+        push    cx
+        push    dx
+        push    di
+        push    ax
+        mov     dx, bx
+        shl     dx, 1
+        mov     di, array_sizes
+        add     di, dx
+        pop     ax
+        mov     [di], ax
+
+        mov     di, [array_heap_ptr]
+        push    di
+        mov     cx, ax
+.zero_loop:
+        jcxz    .zero_done
+        mov     word [di], 0
+        add     di, 2
+        dec     cx
+        jmp     .zero_loop
+.zero_done:
+        mov     [array_heap_ptr], di
+        pop     ax
+        mov     dx, bx
+        shl     dx, 1
+        mov     di, array_data_ptr
+        add     di, dx
+        mov     [di], ax
+
+        pop     di
+        pop     dx
+        pop     cx
+        pop     ax
+        ret
+
+find_array:
+        push    ax
+        push    cx
+        push    dx
+        push    di
+        mov     cx, [array_count]
+        xor     bx, bx
+        or      cx, cx
+        jz      .not_found
+.search:
+        cmp     bx, cx
+        jae     .not_found
+        mov     ax, bx
+        mov     dx, NAME_LEN+1
+        mul     dx
+        mov     di, array_names
+        add     di, ax
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .found
+        inc     bx
+        jmp     .search
+.found:
+        pop     di
+        pop     dx
+        pop     cx
+        pop     ax
+        ret
+.not_found:
+        mov     al, 16
+        jmp     report_error
+
+get_array_elem:
+        push    di
+        push    cx
+        mov     cx, bx
+        shl     cx, 1
+        mov     di, array_sizes
+        add     di, cx
+        cmp     dx, [di]
+        jae     .out_of_bounds
+        mov     di, array_data_ptr
+        add     di, cx
+        mov     di, [di]
+        shl     dx, 1
+        add     di, dx
+        mov     ax, [di]
+        pop     cx
+        pop     di
+        ret
+.out_of_bounds:
+        mov     al, 17
+        jmp     report_error
+
+set_array_elem:
+        push    di
+        push    cx
+        push    ax
+        mov     cx, bx
+        shl     cx, 1
+        mov     di, array_sizes
+        add     di, cx
+        cmp     dx, [di]
+        jae     .out_of_bounds2
+        mov     di, array_data_ptr
+        add     di, cx
+        mov     di, [di]
+        shl     dx, 1
+        add     di, dx
+        pop     ax
+        mov     [di], ax
+        pop     cx
+        pop     di
+        ret
+.out_of_bounds2:
+        pop     ax
+        mov     al, 17
+        jmp     report_error
+
+; ============================================================
 ; process_line
 ; ============================================================
 process_line:
@@ -587,7 +754,6 @@ process_line:
         or      al, al
         jnz     .not_single_word
 
-        ; RETURN?
         push    si
         mov     si, goto_check_buf
         mov     di, str_return
@@ -596,7 +762,6 @@ process_line:
         cmp     al, 1
         je      .is_return
 
-        ; CALL (lik/lek)?
         cmp     cx, 4
         jb      .try_goto_suffix
         mov     bx, goto_check_buf
@@ -683,6 +848,93 @@ process_line:
 .not_single_word:
         pop     si
 
+        ; ---------- OB"YAVLENIE MASSIVA: <chislo><lar/ler> <imya> ----------
+        push    si
+
+        mov     di, goto_check_buf
+        xor     cx, cx
+.ad_scan:
+        mov     al, [si]
+        cmp     al, ' '
+        jbe     .ad_scan_done
+        stosb
+        inc     si
+        inc     cx
+        cmp     cx, WORD_MAX-1
+        jb      .ad_scan
+.ad_scan_done:
+        mov     byte [di], 0
+
+        mov     al, [goto_check_buf]
+        cmp     al, '0'
+        jb      .not_array_decl
+        cmp     al, '9'
+        ja      .not_array_decl
+
+        cmp     cx, 4
+        jb      .not_array_decl
+        mov     bx, goto_check_buf
+        add     bx, cx
+        sub     bx, 3
+        mov     al, [bx]
+        cmp     al, 'l'
+        jne     .not_array_decl
+        mov     al, [bx+1]
+        cmp     al, 'a'
+        je      .ad_check_r1
+        cmp     al, 'e'
+        je      .ad_check_r2
+        jmp     .not_array_decl
+.ad_check_r1:
+        cmp     byte [bx+2], 'r'
+        jne     .not_array_decl
+        jmp     .ad_confirmed
+.ad_check_r2:
+        cmp     byte [bx+2], 'r'
+        jne     .not_array_decl
+
+.ad_confirmed:
+        mov     byte [bx], 0
+
+        push    si
+        mov     si, goto_check_buf
+        call    parse_signed_number
+        mov     [compare_value], ax
+        pop     si
+
+        call    skip_spaces
+        mov     al, [si]
+        or      al, al
+        jz      .array_decl_syntax_error
+
+        mov     di, var_name_buf
+.ad_copy_name:
+        mov     al, [si]
+        cmp     al, ' '
+        jbe     .ad_name_done
+        stosb
+        inc     si
+        jmp     .ad_copy_name
+.ad_name_done:
+        mov     byte [di], 0
+
+        pop     ax
+        mov     ax, [compare_value]
+        push    ax
+        mov     si, var_name_buf
+        call    create_array
+        pop     ax
+        call    init_array_zeros
+        ret
+
+.array_decl_syntax_error:
+        pop     ax
+        mov     al, 13
+        jmp     report_error
+
+.not_array_decl:
+        pop     si
+
         mov     al, [si]
         cmp     al, '"'
         je      .parse_string_operand
@@ -725,6 +977,8 @@ process_line:
         jbe     .ident_done
         cmp     al, '='
         je      .ident_done
+        cmp     al, '['
+        je      .ident_is_array
         stosb
         inc     si
         jmp     .copy_ident
@@ -738,6 +992,59 @@ process_line:
         je      .do_assignment
         pop     si
         jmp     .var_read
+
+; ---------- massiv: chtenie ili zapis elementa ----------
+.ident_is_array:
+        mov     byte [di], 0
+        inc     si
+        call    skip_spaces
+        call    parse_value
+        cmp     byte [value_is_str], 1
+        je      .array_syntax_error
+        mov     ax, [value_num]
+        mov     [array_index], ax
+        call    skip_spaces
+        mov     al, [si]
+        cmp     al, ']'
+        jne     .array_syntax_error
+        inc     si
+        call    skip_spaces
+        mov     al, [si]
+        cmp     al, '='
+        je      .array_write
+        jmp     .array_read_op
+
+.array_write:
+        inc     si
+        call    skip_spaces
+        call    parse_value
+        cmp     byte [value_is_str], 1
+        je      .array_syntax_error
+        mov     ax, [value_num]
+        mov     [rhs_a], ax
+        push    si
+        mov     si, var_name_buf
+        call    find_array
+        pop     si
+        mov     ax, [rhs_a]
+        mov     dx, [array_index]
+        call    set_array_elem
+        ret
+
+.array_read_op:
+        push    si
+        mov     si, var_name_buf
+        call    find_array
+        pop     si
+        mov     dx, [array_index]
+        call    get_array_elem
+        mov     [operand_num], ax
+        mov     byte [operand_is_str], 0
+        jmp     .parse_word
+
+.array_syntax_error:
+        mov     al, 13
+        jmp     report_error
 
 .do_assignment:
         pop     dx
@@ -930,6 +1237,16 @@ process_line:
         mov     si, word_buffer
         call    parse_signed_number
         mov     [compare_value], ax
+
+        mov     di, str_lar
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .word_is_array_ref_error
+        mov     di, str_ler
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .word_is_array_ref_error
+
         call    classify_condition_suffix
         mov     [condition_kind], al
         pop     si
@@ -976,6 +1293,11 @@ process_line:
         mov     [jump_target], dx
         mov     byte [jump_requested], 1
         ret
+
+.word_is_array_ref_error:
+        pop     ax
+        mov     al, 13
+        jmp     report_error
 
 .unknown_condition_suffix:
         mov     al, 2
@@ -1373,19 +1695,19 @@ skip_spaces:
         ret
 
 ; ============================================================
-; report_error
+; report_error (FIX: podderzhka dvuznachnykh kodov 0-99)
 ; ============================================================
 report_error:
-        push    ax                   ; sohranyaem original kod oshibki
-        mov     dx, msg_err_prefix   ; "ERR "
+        push    ax
+        mov     dx, msg_err_prefix
         mov     ah, 09h
         int     21h
         pop     ax
 
         xor     ah, ah
         mov     bl, 10
-        div     bl                   ; al = kod/10 (desyatki), ah = kod%10 (edinicy)
-        mov     bh, ah               ; sohranyaem edinicy v bh, poka al svoboden
+        div     bl
+        mov     bh, ah
 
         or      al, al
         jz      .skip_tens
@@ -1410,19 +1732,27 @@ report_error:
         int     21h
 
 ; ------------------------------------------------------------
-; Dannye / bufery
+; Dannye s realnym soderzhimym (do etogo mesta - nastoyashie baity)
 ; ------------------------------------------------------------
-msg_usage       db 'Alifba v0.1h. Usage: alifba.com filename.alf', 13, 10, '$'
+msg_usage       db 'Alifba v0.1i. Usage: alifba.com filename.alf', 13, 10, '$'
 msg_err_open    db 'ERR: cannot open file', 13, 10, '$'
 msg_err_read    db 'ERR: cannot read file', 13, 10, '$'
 msg_err_prefix  db 'ERR ', '$'
-err_code_char   db '0', 13, 10, '$'
 
 str_saga        db 'saga',0
 str_sege        db 'sege',0
 str_masaga      db 'masaga',0
 str_mesege      db 'mesege',0
 str_return      db 'return',0
+str_lar         db 'lar',0
+str_ler         db 'ler',0
+
+; ============================================================
+; VSYO NIZHE - tolko nulevye bufery i tablitsy (rb / times X db|dw 0).
+; Poryadok vnutri etogo bloka ne vazhen: FASM ne pishet eti baity
+; v .COM fail, poka posle nikh net nikakikh dannykh s realnym
+; soderzhimym. Eto klyuchevaya optimizatsiya razmera.
+; ============================================================
 
 file_handle     dw 0
 input_len       dw 0
@@ -1446,36 +1776,48 @@ value_str_ptr   dw 0
 rhs_a           dw 0
 rhs_b           dw 0
 
-concat_len      dw 0
-
 return_addr_candidate dw 0
-call_stack      rw MAX_CALL_DEPTH
 call_stack_ptr  dw 0
 
-; --- Tablitsa peremennykh ---
+array_index     dw 0
+array_count     dw 0
+
+concat_len      dw 0
+scan_line_len   dw 0
+
 var_names:
         times   MAX_VARS*(NAME_LEN+1) db 0
 var_types:
         times   MAX_VARS db 0
 var_values:
         times   MAX_VARS dw 0
-var_count       dw 0
-
-; --- Tablitsa metok ---
+var_count       dw ?
 label_names:
         times   MAX_LABELS*(LABEL_NAME_LEN+1) db 0
 label_positions:
         times   MAX_LABELS dw 0
 label_count     dw 0
-str_heap_ptr    dw str_heap
-scan_line_len   dw 0
 
+array_names:
+        times   MAX_ARRAYS*(NAME_LEN+1) db 0
+array_sizes:
+        times   MAX_ARRAYS dw 0
+array_data_ptr:
+        times   MAX_ARRAYS dw 0
+
+call_stack      rw MAX_CALL_DEPTH
+
+
+str_heap_ptr    dw str_heap
+
+array_heap      rw ARRAY_HEAP_SIZE
+array_heap_ptr  dw array_heap
 value_str_buf   rb 256
 value_ident_buf rb NAME_LEN+1
-concat_buf      rb CONCAT_BUF_SIZE
-; --- Kucha dlya strokovykh peremennykh ---
-str_heap        rb STR_HEAP_SIZE
 
+concat_buf      rb CONCAT_BUF_SIZE
+
+str_heap        rb STR_HEAP_SIZE
 filename_buf    rb 64
 line_buffer     rb LINE_MAX
 word_buffer     rb WORD_MAX
