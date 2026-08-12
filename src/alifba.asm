@@ -1,20 +1,22 @@
 ; ============================================================
-; Alifba v0.1c - literaly + peremennye (chislovye i strokovye) + prisvaivanie
+; Alifba v0.1d - literaly + peremennye + prisvaivanie + metki/perehody
 ; FASM, DOS .COM
 ; ============================================================
-; Grammar v0.1c:
+; Grammar v0.1d (dobavleno k v0.1c):
 ;
-;   "stroka" printke      -> vyvesti strokovyi literal
-;   chislo printka        -> vyvesti chislovoi literal
-;   imya printka / printke -> vyvesti znachenie peremennoi
-;   imya = chislo          -> prisvoit chislovoe znachenie (sozdaet, esli net)
-;   imya = "stroka"        -> prisvoit strokovoe znachenie (sozdaet, esli net)
-;   ; kommentarii          -> ignoriruetsya do kontsa stroki
+;   label:            -> opredelenie metki (tolko imya i dvoetochie na stroke)
+;   labelga           -> bezuslovnyi perehod k metke "label"
+;   labelge           -> to zhe samoe (myagkaya forma, semantika odinakova)
 ;
-; Sborka:  fasm alifba_v0_1c.asm alifba.com
+; VAZHNO: perehod - eto EDINSTVENNOE slovo na stroke, zakanchivayusheesya
+; na "ga"/"ge", i posle nego nichego bolshe net (krome probelov/kontsa stroki).
+;
+; Uslovnykh perehodov (-sa/-se) v etoi versii esche NET - tolko bezuslovnyi
+; GOTO. Poetomu testovye programmy dolzhny izbegat beskonechnykh tsiklov
+; (perehod tolko VPERED v etoi versii bezopasen dlya testa).
+;
+; Sborka:  fasm alifba_v0_1d.asm alifba.com
 ; Zapusk:  alifba.com test.alf
-;
-; VAZHNO: pered kazhdym testom udali staryi alifba.com i peresoberi.
 ; ============================================================
 
         org 100h
@@ -28,6 +30,8 @@ WORD_MAX        = 32
 MAX_VARS        = 8
 NAME_LEN        = 8
 STR_HEAP_SIZE   = 2048
+MAX_LABELS      = 8
+LABEL_NAME_LEN  = 8
 
 SUF_UNKNOWN     = 0
 SUF_KA          = 1
@@ -117,24 +121,28 @@ exit_fail:
         int     21h
 
 ; ============================================================
-; process_program
+; process_program - glavnyi tsikl s podderzhkoi perehodov
 ; ============================================================
 process_program:
+        mov     ax, input_buffer
+        add     ax, [input_len]
+        mov     [input_end], ax
+
+        call    scan_labels              ; pervyi prohod: nahodim vse metki
+
         mov     si, input_buffer
-        mov     cx, [input_len]
 
 .next_line:
-        or      cx, cx
-        jz      .prog_done
+        cmp     si, [input_end]
+        jae     .prog_done
 
         mov     di, line_buffer
         xor     dx, dx
 
 .read_char:
-        or      cx, cx
-        jz      .line_end
+        cmp     si, [input_end]
+        jae     .line_end
         lodsb
-        dec     cx
         cmp     al, 13
         je      .maybe_lf
         cmp     al, 10
@@ -146,10 +154,9 @@ process_program:
         jmp     .read_char
 
 .skip_comment:
-        or      cx, cx
-        jz      .line_end
+        cmp     si, [input_end]
+        jae     .line_end
         lodsb
-        dec     cx
         cmp     al, 13
         je      .maybe_lf
         cmp     al, 10
@@ -157,31 +164,181 @@ process_program:
         jmp     .skip_comment
 
 .maybe_lf:
-        or      cx, cx
-        jz      .line_end
+        cmp     si, [input_end]
+        jae     .line_end
         mov     al, [si]
         cmp     al, 10
         jne     .line_end
         inc     si
-        dec     cx
 
 .line_end:
         mov     byte [di], 0
         or      dx, dx
         jz      .next_line
 
-        ; --- KRITICHNO: sokhranyaem registry vneshnego tsikla ---
-        push    cx
-        push    si
+        push    si                       ; poziciya SLEDUYUSHEI stroki (esli ne budet perehoda)
         call    process_line
         pop     si
-        pop     cx
-        ; ---------------------------------------------------------
 
+        cmp     byte [jump_requested], 1
+        jne     .next_line
+        mov     byte [jump_requested], 0
+        mov     si, [jump_target]        ; perehod - zamenyaem tekushuyu poziciyu
         jmp     .next_line
 
 .prog_done:
         ret
+
+; ============================================================
+; scan_labels - odnoprohodnoe skanirovanie vsego faila,
+; sobiraet tablitsu "imya metki -> poziciya sleduyushei stroki"
+; ============================================================
+scan_labels:
+        push    si
+        push    di
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+
+        mov     si, input_buffer
+
+.scan_loop:
+        cmp     si, [input_end]
+        jae     .scan_done
+
+        mov     di, scan_line_buffer
+        mov     word [scan_line_len], 0
+
+.scan_char:
+        cmp     si, [input_end]
+        jae     .scan_eol
+        lodsb
+        cmp     al, 13
+        je      .scan_crlf
+        cmp     al, 10
+        je      .scan_eol
+        cmp     al, ';'
+        je      .scan_comment
+        stosb
+        inc     word [scan_line_len]
+        jmp     .scan_char
+
+.scan_comment:
+        cmp     si, [input_end]
+        jae     .scan_eol
+        lodsb
+        cmp     al, 13
+        je      .scan_crlf
+        cmp     al, 10
+        je      .scan_eol
+        jmp     .scan_comment
+
+.scan_crlf:
+        cmp     si, [input_end]
+        jae     .scan_eol
+        mov     al, [si]
+        cmp     al, 10
+        jne     .scan_eol
+        inc     si
+
+.scan_eol:
+        mov     byte [di], 0
+        ; si seichas ukazyvaet na nachalo SLEDUYUSHEI stroki - eto tsel perehoda,
+        ; kotoruyu my sohranim, esli eta stroka okazhetsya metkoi
+
+        cmp     word [scan_line_len], 0
+        je      .scan_loop               ; pustaya stroka
+
+        mov     bx, scan_line_buffer
+        add     bx, [scan_line_len]
+        dec     bx
+        cmp     byte [bx], ':'
+        jne     .scan_loop               ; ne metka (ne konchaetsya na ':')
+
+        mov     byte [bx], 0             ; obrezaem ':' - chistoe imya metki
+
+        mov     bx, [label_count]
+        cmp     bx, MAX_LABELS
+        jae     .scan_loop               ; tablitsa metok polna - propuskaem
+
+        mov     ax, bx
+        mov     cx, LABEL_NAME_LEN+1
+        mul     cx
+        mov     di, label_names
+        add     di, ax
+
+        mov     dx, si                   ; sohranyaem tsel perehoda, poka si nuzhen dlya kopirovaniya
+        mov     si, scan_line_buffer
+.copy_label_name:
+        lodsb
+        stosb
+        or      al, al
+        jnz     .copy_label_name
+        mov     si, dx                   ; vosstanavlivaem si = tsel perehoda
+
+        mov     ax, bx
+        shl     ax, 1
+        mov     di, label_positions
+        add     di, ax
+        mov     [di], si
+
+        inc     word [label_count]
+        jmp     .scan_loop
+
+.scan_done:
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        pop     di
+        pop     si
+        ret
+
+; ============================================================
+; find_label - poisk metki po imeni
+; vhod: si -> ASCIIZ imya
+; vyhod: dx = poziciya dlya perehoda
+; esli ne naidena - report_error(9)
+; ============================================================
+find_label:
+        push    ax
+        push    bx
+        push    cx
+        push    di
+        mov     cx, [label_count]
+        xor     bx, bx
+        or      cx, cx
+        jz      .not_found
+.search:
+        cmp     bx, cx
+        jae     .not_found
+        push    cx
+        mov     ax, bx
+        mov     cx, LABEL_NAME_LEN+1
+        mul     cx
+        pop     cx
+        mov     di, label_names
+        add     di, ax
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .found
+        inc     bx
+        jmp     .search
+.found:
+        mov     ax, bx
+        shl     ax, 1
+        mov     di, label_positions
+        add     di, ax
+        mov     dx, [di]
+        pop     di
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+.not_found:
+        mov     al, 9
+        jmp     report_error
 
 ; ============================================================
 ; process_line
@@ -190,6 +347,58 @@ process_line:
         mov     si, line_buffer
         call    skip_spaces
 
+        ; ---------- proverka na GOTO: odno slovo, konchaetsya na ga/ge ----------
+        push    si                       ; [A] nachalo stroki (posle probelov)
+
+        mov     di, goto_check_buf
+        xor     cx, cx
+.goto_scan:
+        mov     al, [si]
+        cmp     al, ' '
+        jbe     .goto_scan_done
+        stosb
+        inc     si
+        inc     cx
+        cmp     cx, WORD_MAX-1
+        jb      .goto_scan
+.goto_scan_done:
+        mov     byte [di], 0
+
+        push    si                       ; [B] poziciya srazu posle slova
+        call    skip_spaces
+        mov     al, [si]
+        pop     si                       ; [B]
+        or      al, al
+        jnz     .not_a_goto              ; posle slova chto-to est - eto ne goto
+
+        cmp     cx, 3
+        jb      .not_a_goto
+        mov     bx, goto_check_buf
+        add     bx, cx
+        sub     bx, 2
+        mov     al, [bx]
+        cmp     al, 'g'
+        jne     .not_a_goto
+        mov     al, [bx+1]
+        cmp     al, 'a'
+        je      .is_goto
+        cmp     al, 'e'
+        je      .is_goto
+        jmp     .not_a_goto
+
+.is_goto:
+        pop     ax                       ; [A] otbrasyvaem
+        mov     byte [bx], 0             ; obrezaem suffiks - chistoe imya metki
+        mov     si, goto_check_buf
+        call    find_label               ; -> dx = poziciya
+        mov     [jump_target], dx
+        mov     byte [jump_requested], 1
+        ret
+
+.not_a_goto:
+        pop     si                       ; [A] vosstanavlivaem nachalo stroki
+
+        ; ---------- obychnaya logika: literal / identifikator ----------
         mov     al, [si]
         cmp     al, '"'
         je      .parse_string_operand
@@ -201,14 +410,12 @@ process_line:
         jbe     .parse_number_operand
         jmp     .parse_identifier
 
-; ---------- chislovoi literal kak operand pechati ----------
 .parse_number_operand:
         call    parse_signed_number
         mov     [operand_num], ax
         mov     byte [operand_is_str], 0
         jmp     .parse_word
 
-; ---------- strokovyi literal kak operand pechati ----------
 .parse_string_operand:
         inc     si
         mov     di, str_literal_buf
@@ -226,7 +433,6 @@ process_line:
         mov     byte [operand_is_str], 1
         jmp     .parse_word
 
-; ---------- identifikator: mozhet byt prisvaivaniem ili chteniem ----------
 .parse_identifier:
         mov     di, var_name_buf
 .copy_ident:
@@ -241,28 +447,26 @@ process_line:
 .ident_done:
         mov     byte [di], 0
 
-        push    si                       ; sokhranyaem poziciyu srazu posle identifikatora
+        push    si
         call    skip_spaces
         mov     al, [si]
         cmp     al, '='
         je      .do_assignment
-        pop     si                       ; ne prisvaivanie - vosstanavlivaem poziciyu
+        pop     si
         jmp     .var_read
 
-; ---------- prisvaivanie: imya = znachenie ----------
 .do_assignment:
-        pop     dx                       ; otbrasyvaem sokhranenniy si (ne nuzhen na etom puti)
-        inc     si                       ; propuskaem '='
+        pop     dx
+        inc     si
         call    skip_spaces
         mov     al, [si]
         cmp     al, '"'
         je      .assign_string
 
-        ; prisvaivanie chisla
-        call    parse_signed_number      ; -> ax = znachenie
+        call    parse_signed_number
         push    ax
         mov     si, var_name_buf
-        call    find_or_create_var_num   ; -> bx = indeks
+        call    find_or_create_var_num
         pop     ax
         call    set_var_num
         ret
@@ -281,15 +485,14 @@ process_line:
 .assign_str_done:
         mov     byte [di], '$'
         mov     si, var_name_buf
-        call    find_or_create_var_str   ; -> bx = indeks
-        call    store_var_string         ; bx=indeks, kopiruet str_literal_buf v kuchu
+        call    find_or_create_var_str
+        call    store_var_string
         ret
 
-; ---------- chtenie peremennoi (dlya posleduyushei pechati) ----------
 .var_read:
         push    si
         mov     si, var_name_buf
-        call    find_var                 ; -> bx=indeks, al=tip (0/1); esli net - vyhod s ERR5
+        call    find_var
         pop     si
         cmp     al, 1
         je      .var_read_string
@@ -298,12 +501,11 @@ process_line:
         mov     byte [operand_is_str], 0
         jmp     .parse_word
 .var_read_string:
-        call    get_var_str_ptr          ; bx -> dx = pointer
+        call    get_var_str_ptr
         mov     [operand_str_ptr], dx
         mov     byte [operand_is_str], 1
         jmp     .parse_word
 
-; ---------- razbor slova root+suffix i vyvod ----------
 .parse_word:
         call    skip_spaces
         mov     di, word_buffer
@@ -351,10 +553,7 @@ process_line:
         jmp     report_error
 
 ; ============================================================
-; find_var - poisk peremennoi po imeni (BEZ sozdaniya)
-; vkhod: si -> ASCIIZ imya
-; vykhod: bx = indeks, al = tip (0/1)
-; esli ne naidena - report_error(5), programma zavershaetsya
+; find_var
 ; ============================================================
 find_var:
         push    cx
@@ -391,10 +590,7 @@ find_var:
         jmp     report_error
 
 ; ============================================================
-; find_or_create_var_num - poisk ili sozdanie CHISLOVOI peremennoi
-; vkhod: si -> ASCIIZ imya
-; vykhod: bx = indeks
-; esli naidena s drugim tipom - ERR 7; esli tablitsa polna - ERR 8
+; find_or_create_var_num
 ; ============================================================
 find_or_create_var_num:
         push    ax
@@ -463,8 +659,7 @@ find_or_create_var_num:
         jmp     report_error
 
 ; ============================================================
-; find_or_create_var_str - poisk ili sozdanie STROKOVOI peremennoi
-; (analogichno find_or_create_var_num, no tip = 1)
+; find_or_create_var_str
 ; ============================================================
 find_or_create_var_str:
         push    ax
@@ -533,9 +728,7 @@ find_or_create_var_str:
         jmp     report_error
 
 ; ============================================================
-; strcmp_asciiz - sravnenie dvukh ASCIIZ-strok
-; vkhod: si -> stroka 1, di -> stroka 2
-; vykhod: al = 1 esli ravny, al = 0 esli net (si, di vosstanavlivayutsya)
+; strcmp_asciiz
 ; ============================================================
 strcmp_asciiz:
         push    si
@@ -562,7 +755,7 @@ strcmp_asciiz:
         ret
 
 ; ============================================================
-; get_var_num - vkhod: bx=indeks; vykhod: ax=znachenie
+; get_var_num / set_var_num / get_var_str_ptr / store_var_string
 ; ============================================================
 get_var_num:
         push    di
@@ -574,9 +767,6 @@ get_var_num:
         pop     di
         ret
 
-; ============================================================
-; set_var_num - vkhod: bx=indeks, ax=znachenie dlya zapisi
-; ============================================================
 set_var_num:
         push    di
         push    ax
@@ -589,9 +779,6 @@ set_var_num:
         pop     di
         ret
 
-; ============================================================
-; get_var_str_ptr - vkhod: bx=indeks; vykhod: dx=pointer na stroku v kuche
-; ============================================================
 get_var_str_ptr:
         push    di
         mov     ax, bx
@@ -602,17 +789,12 @@ get_var_str_ptr:
         pop     di
         ret
 
-; ============================================================
-; store_var_string - kopiruet str_literal_buf ('$'-terminated) v kuchu
-; i sokhranyaet ukazatel v var_values[bx]
-; vkhod: bx = indeks peremennoi
-; ============================================================
 store_var_string:
         push    ax
         push    si
         push    di
         mov     di, [str_heap_ptr]
-        mov     ax, di                   ; ax = nachalnyi adres novoi stroki
+        mov     ax, di
         push    ax
         mov     si, str_literal_buf
 .copy_loop:
@@ -620,8 +802,8 @@ store_var_string:
         stosb
         cmp     al, '$'
         jne     .copy_loop
-        mov     [str_heap_ptr], di       ; sdvigaem ukazatel kuchi za terminator
-        pop     ax                       ; ax = pointer, kotoryi sohranyaem
+        mov     [str_heap_ptr], di
+        pop     ax
         mov     di, bx
         shl     di, 1
         add     di, var_values
@@ -768,7 +950,7 @@ report_error:
 ; ------------------------------------------------------------
 ; Dannye / bufery
 ; ------------------------------------------------------------
-msg_usage       db 'Alifba v0.1c. Usage: alifba.com filename.alf', 13, 10, '$'
+msg_usage       db 'Alifba v0.1d. Usage: alifba.com filename.alf', 13, 10, '$'
 msg_err_open    db 'ERR: cannot open file', 13, 10, '$'
 msg_err_read    db 'ERR: cannot read file', 13, 10, '$'
 msg_err         db 'ERR '
@@ -776,13 +958,17 @@ err_code_char   db '0', 13, 10, '$'
 
 file_handle     dw 0
 input_len       dw 0
+input_end       dw 0
 
 operand_num     dw 0
 operand_is_str  db 0
 operand_str_ptr dw 0
 word_len        dw 0
 
-; --- Tablitsa peremennykh (nachinaet pustoi, zapolnyaetsya cherez '=') ---
+jump_requested  db 0
+jump_target     dw 0
+
+; --- Tablitsa peremennykh ---
 var_names:
         times   MAX_VARS*(NAME_LEN+1) db 0
 var_types:
@@ -790,6 +976,13 @@ var_types:
 var_values:
         times   MAX_VARS dw 0
 var_count       dw 0
+
+; --- Tablitsa metok ---
+label_names:
+        times   MAX_LABELS*(LABEL_NAME_LEN+1) db 0
+label_positions:
+        times   MAX_LABELS dw 0
+label_count     dw 0
 
 ; --- Kucha dlya strokovykh peremennykh ---
 str_heap        rb STR_HEAP_SIZE
@@ -799,6 +992,9 @@ filename_buf    rb 64
 line_buffer     rb LINE_MAX
 word_buffer     rb WORD_MAX
 var_name_buf    rb NAME_LEN+1
+goto_check_buf  rb WORD_MAX
+scan_line_buffer rb LINE_MAX
+scan_line_len   dw 0
 str_literal_buf rb 256
 num_buf         rb 8
 

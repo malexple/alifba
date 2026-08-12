@@ -1,0 +1,7 @@
+"Before jump" printke
+skipga
+
+"This should NOT print" printke
+
+skip:
+"After jump" printke
