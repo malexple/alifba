@@ -1442,13 +1442,10 @@ condition_kind  db 0
 value_is_str    db 0
 value_num       dw 0
 value_str_ptr   dw 0
-value_str_buf   rb 256
-value_ident_buf rb NAME_LEN+1
 
 rhs_a           dw 0
 rhs_b           dw 0
 
-concat_buf      rb CONCAT_BUF_SIZE
 concat_len      dw 0
 
 return_addr_candidate dw 0
@@ -1470,10 +1467,14 @@ label_names:
 label_positions:
         times   MAX_LABELS dw 0
 label_count     dw 0
+str_heap_ptr    dw str_heap
+scan_line_len   dw 0
 
+value_str_buf   rb 256
+value_ident_buf rb NAME_LEN+1
+concat_buf      rb CONCAT_BUF_SIZE
 ; --- Kucha dlya strokovykh peremennykh ---
 str_heap        rb STR_HEAP_SIZE
-str_heap_ptr    dw str_heap
 
 filename_buf    rb 64
 line_buffer     rb LINE_MAX
@@ -1481,7 +1482,6 @@ word_buffer     rb WORD_MAX
 var_name_buf    rb NAME_LEN+1
 goto_check_buf  rb WORD_MAX
 scan_line_buffer rb LINE_MAX
-scan_line_len   dw 0
 str_literal_buf rb 256
 num_buf         rb 8
 
