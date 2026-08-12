@@ -1,0 +1,6 @@
+status = 5
+status 1masaga skip_error
+"Error: status is 1" printke
+
+skip_error:
+"Check complete" printke

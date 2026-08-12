@@ -1,0 +1,10 @@
+age = 18
+age 18saga is_18
+"Not 18" printke
+endga
+
+is_18:
+"Exactly 18!" printke
+
+end:
+"Done" printke

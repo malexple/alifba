@@ -1,22 +1,8 @@
 ; ============================================================
-; Alifba v0.1d - literaly + peremennye + prisvaivanie + metki/perehody
+; Alifba v0.1e (fixed) - dobavlena obrabotka strok-metok pri
+; posledovatelnom vypolnenii (ranshe oni oshibochno traktovalis
+; kak chtenie peremennoi, chto davalo ERR 5)
 ; FASM, DOS .COM
-; ============================================================
-; Grammar v0.1d (dobavleno k v0.1c):
-;
-;   label:            -> opredelenie metki (tolko imya i dvoetochie na stroke)
-;   labelga           -> bezuslovnyi perehod k metke "label"
-;   labelge           -> to zhe samoe (myagkaya forma, semantika odinakova)
-;
-; VAZHNO: perehod - eto EDINSTVENNOE slovo na stroke, zakanchivayusheesya
-; na "ga"/"ge", i posle nego nichego bolshe net (krome probelov/kontsa stroki).
-;
-; Uslovnykh perehodov (-sa/-se) v etoi versii esche NET - tolko bezuslovnyi
-; GOTO. Poetomu testovye programmy dolzhny izbegat beskonechnykh tsiklov
-; (perehod tolko VPERED v etoi versii bezopasen dlya testa).
-;
-; Sborka:  fasm alifba_v0_1d.asm alifba.com
-; Zapusk:  alifba.com test.alf
 ; ============================================================
 
         org 100h
@@ -36,6 +22,10 @@ LABEL_NAME_LEN  = 8
 SUF_UNKNOWN     = 0
 SUF_KA          = 1
 SUF_KE          = 2
+
+CSUF_UNKNOWN    = 0
+CSUF_EQ_GOTO    = 1
+CSUF_NEQ_GOTO   = 2
 
 ; ------------------------------------------------------------
 ; Tochka vkhoda
@@ -121,14 +111,14 @@ exit_fail:
         int     21h
 
 ; ============================================================
-; process_program - glavnyi tsikl s podderzhkoi perehodov
+; process_program
 ; ============================================================
 process_program:
         mov     ax, input_buffer
         add     ax, [input_len]
         mov     [input_end], ax
 
-        call    scan_labels              ; pervyi prohod: nahodim vse metki
+        call    scan_labels
 
         mov     si, input_buffer
 
@@ -176,22 +166,21 @@ process_program:
         or      dx, dx
         jz      .next_line
 
-        push    si                       ; poziciya SLEDUYUSHEI stroki (esli ne budet perehoda)
+        push    si
         call    process_line
         pop     si
 
         cmp     byte [jump_requested], 1
         jne     .next_line
         mov     byte [jump_requested], 0
-        mov     si, [jump_target]        ; perehod - zamenyaem tekushuyu poziciyu
+        mov     si, [jump_target]
         jmp     .next_line
 
 .prog_done:
         ret
 
 ; ============================================================
-; scan_labels - odnoprohodnoe skanirovanie vsego faila,
-; sobiraet tablitsu "imya metki -> poziciya sleduyushei stroki"
+; scan_labels
 ; ============================================================
 scan_labels:
         push    si
@@ -244,23 +233,20 @@ scan_labels:
 
 .scan_eol:
         mov     byte [di], 0
-        ; si seichas ukazyvaet na nachalo SLEDUYUSHEI stroki - eto tsel perehoda,
-        ; kotoruyu my sohranim, esli eta stroka okazhetsya metkoi
-
         cmp     word [scan_line_len], 0
-        je      .scan_loop               ; pustaya stroka
+        je      .scan_loop
 
         mov     bx, scan_line_buffer
         add     bx, [scan_line_len]
         dec     bx
         cmp     byte [bx], ':'
-        jne     .scan_loop               ; ne metka (ne konchaetsya na ':')
+        jne     .scan_loop
 
-        mov     byte [bx], 0             ; obrezaem ':' - chistoe imya metki
+        mov     byte [bx], 0
 
         mov     bx, [label_count]
         cmp     bx, MAX_LABELS
-        jae     .scan_loop               ; tablitsa metok polna - propuskaem
+        jae     .scan_loop
 
         mov     ax, bx
         mov     cx, LABEL_NAME_LEN+1
@@ -268,14 +254,14 @@ scan_labels:
         mov     di, label_names
         add     di, ax
 
-        mov     dx, si                   ; sohranyaem tsel perehoda, poka si nuzhen dlya kopirovaniya
+        mov     dx, si
         mov     si, scan_line_buffer
 .copy_label_name:
         lodsb
         stosb
         or      al, al
         jnz     .copy_label_name
-        mov     si, dx                   ; vosstanavlivaem si = tsel perehoda
+        mov     si, dx
 
         mov     ax, bx
         shl     ax, 1
@@ -296,10 +282,7 @@ scan_labels:
         ret
 
 ; ============================================================
-; find_label - poisk metki po imeni
-; vhod: si -> ASCIIZ imya
-; vyhod: dx = poziciya dlya perehoda
-; esli ne naidena - report_error(9)
+; find_label
 ; ============================================================
 find_label:
         push    ax
@@ -341,14 +324,67 @@ find_label:
         jmp     report_error
 
 ; ============================================================
+; classify_condition_suffix
+; ============================================================
+classify_condition_suffix:
+        push    di
+        mov     di, str_saga
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .eq
+        mov     di, str_sege
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .eq
+        mov     di, str_masaga
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .neq
+        mov     di, str_mesege
+        call    strcmp_asciiz
+        cmp     al, 1
+        je      .neq
+        pop     di
+        mov     al, CSUF_UNKNOWN
+        ret
+.eq:
+        pop     di
+        mov     al, CSUF_EQ_GOTO
+        ret
+.neq:
+        pop     di
+        mov     al, CSUF_NEQ_GOTO
+        ret
+
+; ============================================================
 ; process_line
 ; ============================================================
 process_line:
         mov     si, line_buffer
         call    skip_spaces
 
+        ; ---------- NOVOE: proverka na stroku-metku "imya:" - eto no-op ----------
+        push    si
+        mov     di, si
+.find_line_end:
+        mov     al, [di]
+        or      al, al
+        jz      .checked_line_end
+        inc     di
+        jmp     .find_line_end
+.checked_line_end:
+        cmp     di, si
+        je      .not_a_label_def         ; pustaya stroka (ne dolzhno sluchatsya zdes)
+        dec     di
+        cmp     byte [di], ':'
+        jne     .not_a_label_def
+        pop     ax                       ; otbrasyvaem sohranenniy si
+        ret                              ; eto opredelenie metki - nichego ne delaem
+.not_a_label_def:
+        pop     si
+
         ; ---------- proverka na GOTO: odno slovo, konchaetsya na ga/ge ----------
-        push    si                       ; [A] nachalo stroki (posle probelov)
+        push    si
 
         mov     di, goto_check_buf
         xor     cx, cx
@@ -364,12 +400,12 @@ process_line:
 .goto_scan_done:
         mov     byte [di], 0
 
-        push    si                       ; [B] poziciya srazu posle slova
+        push    si
         call    skip_spaces
         mov     al, [si]
-        pop     si                       ; [B]
+        pop     si
         or      al, al
-        jnz     .not_a_goto              ; posle slova chto-to est - eto ne goto
+        jnz     .not_a_goto
 
         cmp     cx, 3
         jb      .not_a_goto
@@ -387,16 +423,16 @@ process_line:
         jmp     .not_a_goto
 
 .is_goto:
-        pop     ax                       ; [A] otbrasyvaem
-        mov     byte [bx], 0             ; obrezaem suffiks - chistoe imya metki
+        pop     ax
+        mov     byte [bx], 0
         mov     si, goto_check_buf
-        call    find_label               ; -> dx = poziciya
+        call    find_label
         mov     [jump_target], dx
         mov     byte [jump_requested], 1
         ret
 
 .not_a_goto:
-        pop     si                       ; [A] vosstanavlivaem nachalo stroki
+        pop     si
 
         ; ---------- obychnaya logika: literal / identifikator ----------
         mov     al, [si]
@@ -506,6 +542,7 @@ process_line:
         mov     byte [operand_is_str], 1
         jmp     .parse_word
 
+; ---------- razbor vtorogo tokena: PECHAT ili USLOVIE ----------
 .parse_word:
         call    skip_spaces
         mov     di, word_buffer
@@ -523,6 +560,16 @@ process_line:
         mov     byte [di], 0
         mov     [word_len], cx
 
+        mov     al, [word_buffer]
+        cmp     al, '-'
+        je      .is_condition_word
+        cmp     al, '0'
+        jb      .is_print_word
+        cmp     al, '9'
+        jbe     .is_condition_word
+        jmp     .is_print_word
+
+.is_print_word:
         call    detect_suffix
         cmp     al, SUF_KA
         je      .do_print_num
@@ -549,6 +596,70 @@ process_line:
         ret
 
 .type_mismatch:
+        mov     al, 1
+        jmp     report_error
+
+.is_condition_word:
+        push    si
+        mov     si, word_buffer
+        call    parse_signed_number
+        mov     [compare_value], ax
+        call    classify_condition_suffix
+        mov     [condition_kind], al
+        pop     si
+
+        cmp     byte [condition_kind], 0
+        je      .unknown_condition_suffix
+
+        call    skip_spaces
+        mov     di, goto_check_buf
+        xor     cx, cx
+.copy_target:
+        mov     al, [si]
+        cmp     al, ' '
+        jbe     .target_done
+        stosb
+        inc     si
+        inc     cx
+        cmp     cx, WORD_MAX-1
+        jb      .copy_target
+.target_done:
+        mov     byte [di], 0
+        cmp     cx, 0
+        je      .missing_target
+
+        cmp     byte [operand_is_str], 1
+        je      .cond_type_mismatch
+
+        mov     ax, [operand_num]
+        cmp     ax, [compare_value]
+        je      .values_equal
+
+        cmp     byte [condition_kind], CSUF_NEQ_GOTO
+        je      .do_condition_jump
+        ret
+
+.values_equal:
+        cmp     byte [condition_kind], CSUF_EQ_GOTO
+        je      .do_condition_jump
+        ret
+
+.do_condition_jump:
+        mov     si, goto_check_buf
+        call    find_label
+        mov     [jump_target], dx
+        mov     byte [jump_requested], 1
+        ret
+
+.unknown_condition_suffix:
+        mov     al, 2
+        jmp     report_error
+
+.missing_target:
+        mov     al, 10
+        jmp     report_error
+
+.cond_type_mismatch:
         mov     al, 1
         jmp     report_error
 
@@ -950,11 +1061,16 @@ report_error:
 ; ------------------------------------------------------------
 ; Dannye / bufery
 ; ------------------------------------------------------------
-msg_usage       db 'Alifba v0.1d. Usage: alifba.com filename.alf', 13, 10, '$'
+msg_usage       db 'Alifba v0.1e-fixed. Usage: alifba.com filename.alf', 13, 10, '$'
 msg_err_open    db 'ERR: cannot open file', 13, 10, '$'
 msg_err_read    db 'ERR: cannot read file', 13, 10, '$'
 msg_err         db 'ERR '
 err_code_char   db '0', 13, 10, '$'
+
+str_saga        db 'saga',0
+str_sege        db 'sege',0
+str_masaga      db 'masaga',0
+str_mesege      db 'mesege',0
 
 file_handle     dw 0
 input_len       dw 0
@@ -967,6 +1083,9 @@ word_len        dw 0
 
 jump_requested  db 0
 jump_target     dw 0
+
+compare_value   dw 0
+condition_kind  db 0
 
 ; --- Tablitsa peremennykh ---
 var_names:
