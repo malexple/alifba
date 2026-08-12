@@ -1,0 +1,11 @@
+greetlik
+"After greeting" printke
+endga
+
+greet:
+"Hello from subroutine!" printke
+return
+
+end:
+"Program end" printke
+return

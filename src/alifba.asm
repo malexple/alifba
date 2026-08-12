@@ -1,21 +1,26 @@
 ; ============================================================
-; Alifba v0.1g - dobavlena konkatenatsiya strok cherez -is/-es
-; (simmetrichno chislovomu slozheniyu iz v0.1f)
+; Alifba v0.1h - dobavleny podprogrammy: -lik/-lek (CALL) i return
 ; FASM, DOS .COM
 ; ============================================================
 ; Novaya grammatika:
 ;
-;   imya = strokaA strokaBis   -> konkatenatsiya (strokaA + strokaB)
-;   imya = "tekst"              -> prostoe prisvaivanie (kak ranshe)
-;   imya = drugaya_peremennaya  -> kopirovanie (chislo ili stroka - po tipu istochnika)
+;   imyalik   -> vyzvat podprogrammu "imya" (sohranit adres vozvrata)
+;   imyalek   -> to zhe samoe (myagkaya forma)
+;   return    -> vernutsya tuda, otkuda byl vyzov
 ;
 ; Primer:
-;   greeting = "Hello, "
-;   name = "Alifba"
-;   message = greeting name is
-;   message printke        -> "Hello, Alifba"
+;   greetlik
+;   "After greeting" printke
+;   endga
 ;
-; Sborka:  fasm alifba_v0_1g.asm alifba.com
+;   greet:
+;   "Hello from subroutine!" printke
+;   return
+;
+;   end:
+;   "Program end" printke
+;
+; Sborka:  fasm alifba_v0_1h.asm alifba.com
 ; ============================================================
 
         org 100h
@@ -32,6 +37,7 @@ STR_HEAP_SIZE   = 2048
 MAX_LABELS      = 8
 LABEL_NAME_LEN  = 8
 CONCAT_BUF_SIZE = 512
+MAX_CALL_DEPTH  = 8
 
 SUF_UNKNOWN     = 0
 SUF_KA          = 1
@@ -179,6 +185,8 @@ process_program:
         mov     byte [di], 0
         or      dx, dx
         jz      .next_line
+
+        mov     [return_addr_candidate], si  ; NOVOE: dlya obrabotki lik/lek (CALL)
 
         push    si
         call    process_line
@@ -371,8 +379,7 @@ classify_condition_suffix:
         ret
 
 ; ============================================================
-; check_is_es_suffix - proveryaet, chto word_buffer/[word_len] eto
-; tochno "is" ili "es". Esli net - report_error(2) (ne vozvrashaetsya)
+; check_is_es_suffix
 ; ============================================================
 check_is_es_suffix:
         cmp     word [word_len], 2
@@ -396,7 +403,7 @@ check_is_es_suffix:
         jmp     report_error
 
 ; ============================================================
-; parse_value - universalnyi razbor odnogo znacheniya
+; parse_value
 ; ============================================================
 parse_value:
         mov     al, [si]
@@ -462,7 +469,6 @@ parse_value:
 
 ; ============================================================
 ; copy_value_str_to_concat_buf / append_value_str_to_concat_buf
-; kopiruyut iz [value_str_ptr] ('$'-terminated) v concat_buf
 ; ============================================================
 copy_value_str_to_concat_buf:
         push    ax
@@ -505,8 +511,7 @@ append_value_str_to_concat_buf:
         ret
 
 ; ============================================================
-; store_var_string_from_concat_buf - sohranyaet soderzhimoe concat_buf
-; v peremennuyu, na kotoruyu ukazyvaet BX (indeks, uzhe naiden/sozdan)
+; store_var_string_from_concat_buf
 ; ============================================================
 store_var_string_from_concat_buf:
         push    ax
@@ -538,6 +543,7 @@ process_line:
         mov     si, line_buffer
         call    skip_spaces
 
+        ; ---------- stroka-metka "imya:" - no-op ----------
         push    si
         mov     di, si
 .find_line_end:
@@ -557,19 +563,21 @@ process_line:
 .not_a_label_def:
         pop     si
 
+        ; ---------- odnoslovnyi operator: RETURN / CALL (lik,lek) / GOTO (ga,ge) ----------
         push    si
+
         mov     di, goto_check_buf
         xor     cx, cx
-.goto_scan:
+.sw_scan:
         mov     al, [si]
         cmp     al, ' '
-        jbe     .goto_scan_done
+        jbe     .sw_scan_done
         stosb
         inc     si
         inc     cx
         cmp     cx, WORD_MAX-1
-        jb      .goto_scan
-.goto_scan_done:
+        jb      .sw_scan
+.sw_scan_done:
         mov     byte [di], 0
 
         push    si
@@ -577,22 +585,91 @@ process_line:
         mov     al, [si]
         pop     si
         or      al, al
-        jnz     .not_a_goto
+        jnz     .not_single_word
 
+        ; RETURN?
+        push    si
+        mov     si, goto_check_buf
+        mov     di, str_return
+        call    strcmp_asciiz
+        pop     si
+        cmp     al, 1
+        je      .is_return
+
+        ; CALL (lik/lek)?
+        cmp     cx, 4
+        jb      .try_goto_suffix
+        mov     bx, goto_check_buf
+        add     bx, cx
+        sub     bx, 3
+        mov     al, [bx]
+        cmp     al, 'l'
+        jne     .try_goto_suffix
+        mov     al, [bx+1]
+        cmp     al, 'i'
+        je      .check_lik_k
+        cmp     al, 'e'
+        je      .check_lek_k
+        jmp     .try_goto_suffix
+.check_lik_k:
+        cmp     byte [bx+2], 'k'
+        jne     .try_goto_suffix
+        jmp     .is_call
+.check_lek_k:
+        cmp     byte [bx+2], 'k'
+        jne     .try_goto_suffix
+        jmp     .is_call
+
+.try_goto_suffix:
         cmp     cx, 3
-        jb      .not_a_goto
+        jb      .not_single_word
         mov     bx, goto_check_buf
         add     bx, cx
         sub     bx, 2
         mov     al, [bx]
         cmp     al, 'g'
-        jne     .not_a_goto
+        jne     .not_single_word
         mov     al, [bx+1]
         cmp     al, 'a'
         je      .is_goto
         cmp     al, 'e'
         je      .is_goto
-        jmp     .not_a_goto
+        jmp     .not_single_word
+
+.is_return:
+        pop     ax
+        cmp     word [call_stack_ptr], 0
+        je      .return_stack_empty
+        dec     word [call_stack_ptr]
+        mov     bx, [call_stack_ptr]
+        shl     bx, 1
+        mov     dx, [call_stack + bx]
+        mov     [jump_target], dx
+        mov     byte [jump_requested], 1
+        ret
+.return_stack_empty:
+        mov     al, 11
+        jmp     report_error
+
+.is_call:
+        pop     ax
+        mov     byte [bx], 0
+        mov     ax, [call_stack_ptr]
+        cmp     ax, MAX_CALL_DEPTH
+        jae     .call_stack_overflow
+        mov     bx, ax
+        shl     bx, 1
+        mov     dx, [return_addr_candidate]
+        mov     [call_stack + bx], dx
+        inc     word [call_stack_ptr]
+        mov     si, goto_check_buf
+        call    find_label
+        mov     [jump_target], dx
+        mov     byte [jump_requested], 1
+        ret
+.call_stack_overflow:
+        mov     al, 12
+        jmp     report_error
 
 .is_goto:
         pop     ax
@@ -603,7 +680,7 @@ process_line:
         mov     byte [jump_requested], 1
         ret
 
-.not_a_goto:
+.not_single_word:
         pop     si
 
         mov     al, [si]
@@ -662,7 +739,6 @@ process_line:
         pop     si
         jmp     .var_read
 
-; ---------- prisvaivanie: chisla ili stroki, s opciyonalnym is/es ----------
 .do_assignment:
         pop     dx
         inc     si
@@ -673,7 +749,6 @@ process_line:
         cmp     byte [value_is_str], 1
         je      .rhs_is_string
 
-        ; ---- CHISLOVAYA vetv ----
         mov     ax, [value_num]
         mov     [rhs_a], ax
 
@@ -732,7 +807,6 @@ process_line:
         mov     al, 1
         jmp     report_error
 
-; ---- STROKOVAYA vetv ----
 .rhs_is_string:
         call    copy_value_str_to_concat_buf
 
@@ -1302,27 +1376,53 @@ skip_spaces:
 ; report_error
 ; ============================================================
 report_error:
-        add     al, '0'
-        mov     [err_code_char], al
-        mov     dx, msg_err
+        push    ax                   ; sohranyaem original kod oshibki
+        mov     dx, msg_err_prefix   ; "ERR "
         mov     ah, 09h
         int     21h
+        pop     ax
+
+        xor     ah, ah
+        mov     bl, 10
+        div     bl                   ; al = kod/10 (desyatki), ah = kod%10 (edinicy)
+        mov     bh, ah               ; sohranyaem edinicy v bh, poka al svoboden
+
+        or      al, al
+        jz      .skip_tens
+        add     al, '0'
+        mov     dl, al
+        mov     ah, 02h
+        int     21h
+.skip_tens:
+        mov     al, bh
+        add     al, '0'
+        mov     dl, al
+        mov     ah, 02h
+        int     21h
+
+        mov     dl, 13
+        mov     ah, 02h
+        int     21h
+        mov     dl, 10
+        int     21h
+
         mov     ax, 4C01h
         int     21h
 
 ; ------------------------------------------------------------
 ; Dannye / bufery
 ; ------------------------------------------------------------
-msg_usage       db 'Alifba v0.1g. Usage: alifba.com filename.alf', 13, 10, '$'
+msg_usage       db 'Alifba v0.1h. Usage: alifba.com filename.alf', 13, 10, '$'
 msg_err_open    db 'ERR: cannot open file', 13, 10, '$'
 msg_err_read    db 'ERR: cannot read file', 13, 10, '$'
-msg_err         db 'ERR '
+msg_err_prefix  db 'ERR ', '$'
 err_code_char   db '0', 13, 10, '$'
 
 str_saga        db 'saga',0
 str_sege        db 'sege',0
 str_masaga      db 'masaga',0
 str_mesege      db 'mesege',0
+str_return      db 'return',0
 
 file_handle     dw 0
 input_len       dw 0
@@ -1350,6 +1450,10 @@ rhs_b           dw 0
 
 concat_buf      rb CONCAT_BUF_SIZE
 concat_len      dw 0
+
+return_addr_candidate dw 0
+call_stack      rw MAX_CALL_DEPTH
+call_stack_ptr  dw 0
 
 ; --- Tablitsa peremennykh ---
 var_names:
