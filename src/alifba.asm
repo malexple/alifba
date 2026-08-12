@@ -1,26 +1,21 @@
 ; ============================================================
-; Alifba v0.1f - dobavleno slozhenie cherez suffiks -is/-es
-; i vozmozhnost ispolzovat peremennuyu kak znachenie v prisvaivanii
+; Alifba v0.1g - dobavlena konkatenatsiya strok cherez -is/-es
+; (simmetrichno chislovomu slozheniyu iz v0.1f)
 ; FASM, DOS .COM
 ; ============================================================
 ; Novaya grammatika:
 ;
-;   imya = znachenieA znachenieBis   -> imya = znachenieA + znachenieB
-;   imya = znachenieA znachenieBes   -> to zhe samoe
-;   imya = drugaya_peremennaya       -> prostoe chislovoe kopirovanie
+;   imya = strokaA strokaBis   -> konkatenatsiya (strokaA + strokaB)
+;   imya = "tekst"              -> prostoe prisvaivanie (kak ranshe)
+;   imya = drugaya_peremennaya  -> kopirovanie (chislo ili stroka - po tipu istochnika)
 ;
-; znachenieA/znachenieB mogut byt CHISLOM ili IMENEM CHISLOVOI peremennoi.
-; Slozhenie so strokami v etoi versii NE podderzhano.
+; Primer:
+;   greeting = "Hello, "
+;   name = "Alifba"
+;   message = greeting name is
+;   message printke        -> "Hello, Alifba"
 ;
-; Primer nastoyashego tsikla:
-;   count = 0
-;   loop:
-;   count printka
-;   count = count 1is
-;   count 3masaga loop
-;   "Loop finished" printke
-;
-; Sborka:  fasm alifba_v0_1f.asm alifba.com
+; Sborka:  fasm alifba_v0_1g.asm alifba.com
 ; ============================================================
 
         org 100h
@@ -36,6 +31,7 @@ NAME_LEN        = 8
 STR_HEAP_SIZE   = 2048
 MAX_LABELS      = 8
 LABEL_NAME_LEN  = 8
+CONCAT_BUF_SIZE = 512
 
 SUF_UNKNOWN     = 0
 SUF_KA          = 1
@@ -375,10 +371,32 @@ classify_condition_suffix:
         ret
 
 ; ============================================================
-; parse_value - universalnyi razbor odnogo znacheniya:
-; literal-chislo, literal-stroka ili imya peremennoi.
-; vhod: si -> tekst
-; vyhod: [value_is_str], [value_num] ili [value_str_ptr]; si prodvinut
+; check_is_es_suffix - proveryaet, chto word_buffer/[word_len] eto
+; tochno "is" ili "es". Esli net - report_error(2) (ne vozvrashaetsya)
+; ============================================================
+check_is_es_suffix:
+        cmp     word [word_len], 2
+        jne     .bad
+        mov     al, [word_buffer]
+        cmp     al, 'i'
+        je      .check_i2
+        cmp     al, 'e'
+        je      .check_e2
+        jmp     .bad
+.check_i2:
+        cmp     byte [word_buffer+1], 's'
+        jne     .bad
+        ret
+.check_e2:
+        cmp     byte [word_buffer+1], 's'
+        jne     .bad
+        ret
+.bad:
+        mov     al, 2
+        jmp     report_error
+
+; ============================================================
+; parse_value - universalnyi razbor odnogo znacheniya
 ; ============================================================
 parse_value:
         mov     al, [si]
@@ -443,13 +461,83 @@ parse_value:
         ret
 
 ; ============================================================
+; copy_value_str_to_concat_buf / append_value_str_to_concat_buf
+; kopiruyut iz [value_str_ptr] ('$'-terminated) v concat_buf
+; ============================================================
+copy_value_str_to_concat_buf:
+        push    ax
+        push    si
+        push    di
+        mov     si, [value_str_ptr]
+        mov     di, concat_buf
+        mov     word [concat_len], 0
+.loop:
+        lodsb
+        cmp     al, '$'
+        je      .done
+        stosb
+        inc     word [concat_len]
+        jmp     .loop
+.done:
+        pop     di
+        pop     si
+        pop     ax
+        ret
+
+append_value_str_to_concat_buf:
+        push    ax
+        push    si
+        push    di
+        mov     si, [value_str_ptr]
+        mov     di, concat_buf
+        add     di, [concat_len]
+.loop:
+        lodsb
+        cmp     al, '$'
+        je      .done
+        stosb
+        inc     word [concat_len]
+        jmp     .loop
+.done:
+        pop     di
+        pop     si
+        pop     ax
+        ret
+
+; ============================================================
+; store_var_string_from_concat_buf - sohranyaet soderzhimoe concat_buf
+; v peremennuyu, na kotoruyu ukazyvaet BX (indeks, uzhe naiden/sozdan)
+; ============================================================
+store_var_string_from_concat_buf:
+        push    ax
+        push    cx
+        push    si
+        push    di
+        mov     si, concat_buf
+        mov     di, str_literal_buf
+        mov     cx, [concat_len]
+.copy_loop:
+        jcxz    .copy_done
+        lodsb
+        stosb
+        dec     cx
+        jmp     .copy_loop
+.copy_done:
+        mov     byte [di], '$'
+        pop     di
+        pop     si
+        pop     cx
+        pop     ax
+        call    store_var_string
+        ret
+
+; ============================================================
 ; process_line
 ; ============================================================
 process_line:
         mov     si, line_buffer
         call    skip_spaces
 
-        ; ---------- stroka-metka "imya:" - no-op ----------
         push    si
         mov     di, si
 .find_line_end:
@@ -469,9 +557,7 @@ process_line:
 .not_a_label_def:
         pop     si
 
-        ; ---------- GOTO: odno slovo, konchaetsya na ga/ge ----------
         push    si
-
         mov     di, goto_check_buf
         xor     cx, cx
 .goto_scan:
@@ -576,19 +662,18 @@ process_line:
         pop     si
         jmp     .var_read
 
-; ---------- prisvaivanie (rasshireno: chislo/peremennaya, opciyonalno + is/es) ----------
+; ---------- prisvaivanie: chisla ili stroki, s opciyonalnym is/es ----------
 .do_assignment:
         pop     dx
         inc     si
         call    skip_spaces
-        mov     al, [si]
-        cmp     al, '"'
-        je      .assign_string
 
-        call    parse_value              ; pervoe znachenie RHS
+        call    parse_value
+
         cmp     byte [value_is_str], 1
-        je      .assign_rhs_string_unsupported
+        je      .rhs_is_string
 
+        ; ---- CHISLOVAYA vetv ----
         mov     ax, [value_num]
         mov     [rhs_a], ax
 
@@ -600,7 +685,7 @@ process_line:
         jz      .simple_num_assign
 
         call    skip_spaces
-        call    parse_value              ; vtoroe znachenie RHS
+        call    parse_value
         cmp     byte [value_is_str], 1
         je      .arith_error
         mov     ax, [value_num]
@@ -609,33 +694,20 @@ process_line:
         call    skip_spaces
         mov     di, word_buffer
         xor     cx, cx
-.copy_arith_suffix:
+.copy_num_suffix:
         mov     al, [si]
         cmp     al, ' '
-        jbe     .arith_suffix_done
+        jbe     .num_suffix_done
         stosb
         inc     si
         inc     cx
         cmp     cx, WORD_MAX-1
-        jb      .copy_arith_suffix
-.arith_suffix_done:
+        jb      .copy_num_suffix
+.num_suffix_done:
         mov     byte [di], 0
-        cmp     cx, 2
-        jne     .unknown_arith_suffix
-        mov     al, [word_buffer]
-        cmp     al, 'i'
-        je      .maybe_is
-        cmp     al, 'e'
-        je      .maybe_es
-        jmp     .unknown_arith_suffix
-.maybe_is:
-        cmp     byte [word_buffer+1], 's'
-        jne     .unknown_arith_suffix
-        jmp     .do_add
-.maybe_es:
-        cmp     byte [word_buffer+1], 's'
-        jne     .unknown_arith_suffix
-.do_add:
+        mov     [word_len], cx
+        call    check_is_es_suffix
+
         mov     ax, [rhs_a]
         add     ax, [rhs_b]
         mov     [rhs_a], ax
@@ -656,32 +728,54 @@ process_line:
         call    set_var_num
         ret
 
-.unknown_arith_suffix:
-        mov     al, 2
-        jmp     report_error
 .arith_error:
         mov     al, 1
         jmp     report_error
-.assign_rhs_string_unsupported:
-        mov     al, 1
-        jmp     report_error
 
-.assign_string:
-        inc     si
-        mov     di, str_literal_buf
-.copy_assign_str:
-        lodsb
-        cmp     al, '"'
-        je      .assign_str_done
-        cmp     al, 0
-        je      .assign_str_done
+; ---- STROKOVAYA vetv ----
+.rhs_is_string:
+        call    copy_value_str_to_concat_buf
+
+        push    si
+        call    skip_spaces
+        mov     al, [si]
+        pop     si
+        or      al, al
+        jz      .simple_str_assign
+
+        call    skip_spaces
+        call    parse_value
+        cmp     byte [value_is_str], 0
+        je      .arith_error
+
+        call    append_value_str_to_concat_buf
+
+        call    skip_spaces
+        mov     di, word_buffer
+        xor     cx, cx
+.copy_str_suffix:
+        mov     al, [si]
+        cmp     al, ' '
+        jbe     .str_suffix_done
         stosb
-        jmp     .copy_assign_str
-.assign_str_done:
-        mov     byte [di], '$'
+        inc     si
+        inc     cx
+        cmp     cx, WORD_MAX-1
+        jb      .copy_str_suffix
+.str_suffix_done:
+        mov     byte [di], 0
+        mov     [word_len], cx
+        call    check_is_es_suffix
+
         mov     si, var_name_buf
         call    find_or_create_var_str
-        call    store_var_string
+        call    store_var_string_from_concat_buf
+        ret
+
+.simple_str_assign:
+        mov     si, var_name_buf
+        call    find_or_create_var_str
+        call    store_var_string_from_concat_buf
         ret
 
 .var_read:
@@ -1219,7 +1313,7 @@ report_error:
 ; ------------------------------------------------------------
 ; Dannye / bufery
 ; ------------------------------------------------------------
-msg_usage       db 'Alifba v0.1f. Usage: alifba.com filename.alf', 13, 10, '$'
+msg_usage       db 'Alifba v0.1g. Usage: alifba.com filename.alf', 13, 10, '$'
 msg_err_open    db 'ERR: cannot open file', 13, 10, '$'
 msg_err_read    db 'ERR: cannot read file', 13, 10, '$'
 msg_err         db 'ERR '
@@ -1253,6 +1347,9 @@ value_ident_buf rb NAME_LEN+1
 
 rhs_a           dw 0
 rhs_b           dw 0
+
+concat_buf      rb CONCAT_BUF_SIZE
+concat_len      dw 0
 
 ; --- Tablitsa peremennykh ---
 var_names:
